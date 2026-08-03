@@ -1,4 +1,4 @@
-How to Implement Parallel Processing ABAP to call BAPI ?
+How to Implement Parallel Processing in ABAP to call BAPI ?
 
 Complete tutorial 
 
