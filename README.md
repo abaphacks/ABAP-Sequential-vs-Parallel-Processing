@@ -1,5 +1,8 @@
 How to Implement Parallel Processing ABAP to call BAPI ?
 
+Complete tutorial 
+
+
 SAP Help
 
 https://help.sap.com/docs/btp/sap-business-technology-platform/parallel-processing?version=Cloud
