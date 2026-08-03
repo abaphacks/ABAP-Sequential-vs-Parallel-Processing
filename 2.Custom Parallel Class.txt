@@ -1,0 +1,131 @@
+CLASS zcl_abap_parallel DEFINITION
+  PUBLIC
+  FINAL
+  CREATE PUBLIC .
+
+  PUBLIC SECTION.
+    TYPES:BEGIN OF ty_excel,
+            SerialNo    TYPE char0010,
+            Doctype     TYPE char004,
+            Currency    TYPE char004,
+            salesorg    TYPE char006,
+            SoldtoParty TYPE char0010,
+            itemno      TYPE char005,
+            material    TYPE string,
+            targetqty   TYPE string,
+            targetunit  TYPE string,
+            plant       TYPE string,
+            storeloc    TYPE string,
+            shippoint   TYPE string,
+            route       TYPE string,
+          END OF ty_excel,
+          tt_excel TYPE STANDARD TABLE OF ty_excel,
+          BEGIN OF ty_result_output,
+            vbeln  TYPE vbak-vbeln,
+            status TYPE string,
+          END OF ty_result_output,
+          tt_result TYPE TABLE OF ty_result_output WITH DEFAULT KEY.
+
+    INTERFACES if_serializable_object .
+
+    INTERFACES if_abap_parallel .
+
+    METHODS constructor
+      IMPORTING im_t_excel TYPE tt_excel.
+
+    METHODS get_result
+      RETURNING VALUE(rt_return) TYPE tt_result.
+  PROTECTED SECTION.
+  PRIVATE SECTION.
+    DATA:lt_excel         TYPE tt_excel,
+         ls_header_in     TYPE bapisdhd1,
+         lt_items         TYPE STANDARD TABLE OF bapisditm,
+         lt_partners      TYPE STANDARD TABLE OF bapiparnr,
+         lv_vbeln         TYPE vbak-vbeln,
+         lt_return        TYPE TABLE OF bapiret2,
+         lt_result_output TYPE tt_result.
+ENDCLASS.
+
+
+
+CLASS zcl_abap_parallel IMPLEMENTATION.
+
+  METHOD constructor.
+    lt_excel = im_t_excel.
+  ENDMETHOD.
+
+  METHOD if_abap_parallel~do.
+
+    LOOP AT lt_excel ASSIGNING FIELD-SYMBOL(<fs_excel>) GROUP BY <fs_excel>-serialno.
+
+      ls_header_in = VALUE #( doc_type = <fs_excel>-doctype
+                              doc_date =  sy-datum
+                              created_by = sy-uname
+                              currency = <fs_excel>-currency
+                              sales_org = <fs_excel>-salesorg
+                              distr_chan = '10'
+                              division = '10'
+                              pmnttrms = '0001'
+      ).
+
+      lt_partners = VALUE #(
+          ( partn_role = 'AG' partn_numb =  |{ <fs_excel>-soldtoparty ALPHA = IN }| ) " Sold-to Party
+          ( partn_role = 'WE' partn_numb = |{ <fs_excel>-soldtoparty ALPHA = IN }| ) " Ship-to Party
+          ( partn_role = 'RE' partn_numb = |{ <fs_excel>-soldtoparty ALPHA = IN }| ) " Bill-to Party
+          ( partn_role = 'PR' partn_numb = |{ <fs_excel>-soldtoparty ALPHA = IN }| ) " Payer
+      ).
+
+
+      LOOP AT GROUP <fs_excel> ASSIGNING FIELD-SYMBOL(<fs_grp>).
+
+        lt_items = VALUE #( BASE lt_items
+                      ( itm_number = |{ <fs_grp>-itemno ALPHA = IN }|
+                        material   = <fs_grp>-material
+                        short_text = <fs_grp>-material
+                        target_qty = <fs_grp>-targetqty
+                        target_qu  = <fs_grp>-targetunit
+                        plant      = <fs_grp>-plant
+                        store_loc  = <fs_grp>-storeloc
+                        ship_point = <fs_grp>-shippoint
+                        route      = <fs_grp>-route
+                      )
+                    ).
+      ENDLOOP.
+
+      CALL FUNCTION 'BAPI_SALESORDER_CREATEFROMDAT2'
+        EXPORTING
+          order_header_in = ls_header_in
+          testrun         = 'X'
+        IMPORTING
+          salesdocument   = lv_vbeln
+        TABLES
+          return          = lt_return
+          order_items_in  = lt_items
+          order_partners  = lt_partners.
+
+      DELETE lt_return WHERE type = 'S' OR type = 'W'.
+
+      IF lt_return IS INITIAL AND lv_vbeln IS NOT INITIAL.
+
+        CALL FUNCTION 'BAPI_TRANSACTION_COMMIT'
+          EXPORTING
+            wait = 'X'.
+
+        lt_result_output = VALUE #( BASE lt_result_output ( vbeln = lv_vbeln status = 'Success' ) ).
+
+      ELSEIF lt_return IS NOT INITIAL.
+
+        lt_result_output = VALUE #( BASE lt_result_output ( vbeln = '' status = 'Failed' ) ).
+      ELSE.
+        lt_result_output = VALUE #( BASE lt_result_output ( vbeln = '' status = 'Can be created.' ) ).
+      ENDIF.
+      CLEAR : lt_items, ls_header_in, lt_partners.
+    ENDLOOP.
+
+  ENDMETHOD.
+
+  METHOD get_result.
+    rt_return = lt_result_output.
+  ENDMETHOD.
+
+ENDCLASS.
