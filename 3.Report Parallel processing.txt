@@ -1,0 +1,154 @@
+*&---------------------------------------------------------------------*
+*& Report zrpr_so_creation_parallel
+*&---------------------------------------------------------------------*
+*&
+*&---------------------------------------------------------------------*
+REPORT zrpr_so_creation_parallel.
+TYPES:tt_return TYPE STANDARD TABLE OF bapiret2 WITH DEFAULT KEY,
+      BEGIN OF ty_excel,
+        SerialNo    TYPE char0010,
+        Doctype     TYPE char004,
+        Currency    TYPE char004,
+        salesorg    TYPE char006,
+        SoldtoParty TYPE char0010,
+        itemno      TYPE char005,
+        material    TYPE string,
+        targetqty   TYPE string,
+        targetunit  TYPE string,
+        plant       TYPE string,
+        storeloc    TYPE string,
+        shippoint   TYPE string,
+        route       TYPE string,
+      END OF ty_excel,
+      BEGIN OF ty_result_output,
+        vbeln  TYPE vbak-vbeln,
+        status TYPE string,
+      END OF ty_result_output,
+      tt_result TYPE TABLE OF ty_result_output WITH DEFAULT KEY..
+
+DATA: lt_return       TYPE TABLE OF bapiret2,
+      lv_file_content TYPE xstring,
+      lt_excel        TYPE TABLE OF  ty_excel.
+DATA: lo_runtime TYPE REF TO if_abap_runtime,
+      lv_start   TYPE p LENGTH 8 DECIMALS 0,
+      lv_end     TYPE p LENGTH 8 DECIMALS 0,
+      lv_diff    TYPE p LENGTH 8 DECIMALS 0.
+DATA: lt_result_output TYPE tt_result,
+      lv_limit         TYPE i,
+      lv_num_task      TYPE i,
+      lt_task          TYPE cl_abap_parallel=>t_in_inst_tab
+      .
+
+DATA : ls_header_in TYPE bapisdhd1,
+       lt_items     TYPE STANDARD TABLE OF bapisditm,
+       lt_partners  TYPE STANDARD TABLE OF bapiparnr,
+       lv_vbeln     TYPE vbak-vbeln,
+       l_inst       TYPE REF TO zcl_abap_parallel.
+
+PARAMETERS: p_file  TYPE rlgrap-filename.
+
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_file.
+  CALL FUNCTION 'F4_FILENAME' IMPORTING file_name = p_file.
+
+START-OF-SELECTION.
+
+  lo_runtime = cl_abap_runtime=>create_hr_timer( ).
+  lv_start   = lo_runtime->get_runtime( ).
+
+  IF p_file IS INITIAL.
+    MESSAGE 'Please select a file' TYPE 'E'.
+  ENDIF.
+
+  DATA(gv_file) = p_file.
+
+
+  DATA: lt_bin TYPE STANDARD TABLE OF x255,
+        lv_len TYPE i.
+
+  CALL FUNCTION 'GUI_UPLOAD'
+    EXPORTING
+      filename   = CONV string( gv_file )
+      filetype   = 'BIN'
+    IMPORTING
+      filelength = lv_len
+    TABLES
+      data_tab   = lt_bin.
+
+  CALL FUNCTION 'SCMS_BINARY_TO_XSTRING'
+    EXPORTING
+      input_length = lv_len
+    IMPORTING
+      buffer       = lv_file_content
+    TABLES
+      binary_tab   = lt_bin.
+
+  DATA(lo_xlsx) =
+    xco_cp_xlsx=>document->for_file_content( iv_file_content = lv_file_content )->read_access( ).
+
+  DATA(lo_ws) = lo_xlsx->get_workbook( )->worksheet->at_position( 1 ).
+
+  DATA(lo_pattern) =
+    xco_cp_xlsx_selection=>pattern_builder->simple_from_to(
+      )->from_row( xco_cp_xlsx=>coordinate->for_numeric_value( 2 )
+      )->get_pattern( ).
+
+  lo_ws->select( lo_pattern )->row_stream(
+    )->operation->write_to( REF #( lt_excel )
+    )->set_value_transformation( xco_cp_xlsx_read_access=>value_transformation->string_value
+    )->if_xco_xlsx_ra_operation~execute( ).
+
+  IF lt_excel IS NOT INITIAL.
+
+    "1. set the dynamic limit and task value based on record
+    IF lines( lt_excel ) <= 400.
+      lv_num_task = 2.
+      lv_limit = 200.
+    ELSE.
+      lv_num_task = ceil( lines( lt_excel ) / 200 ).
+      lv_limit = 200.
+    ENDIF.
+
+    "2. set the number of process based on limit and num task
+
+    lt_task = VALUE #( FOR idx = 1 THEN idx + lv_limit UNTIL idx > lines( lt_excel )
+                       LET lv_to = nmin( val1 = idx + lv_limit - 1
+                                         val2 = lines( lt_excel )
+                                         )
+                       IN
+                       ( NEW zcl_abap_parallel(
+                          VALUE #( FOR <fs> IN lt_excel
+                                   FROM idx TO lv_to
+                                   ( <fs> )
+
+                                   )
+                       )
+                        )
+                        ).
+
+
+    "3. call the cl_abap_parallel where we will pass num task and input and output
+    NEW cl_abap_parallel( p_num_tasks = lv_num_task )->run_inst(
+      EXPORTING
+        p_in_tab  = lt_task
+*        p_debug   =
+      IMPORTING
+        p_out_tab = DATA(lt_out_tab)
+    ).
+    "4. collect all the result
+    LOOP AT lt_out_tab ASSIGNING FIELD-SYMBOL(<l_out>) WHERE inst IS NOT INITIAL.
+      l_inst ?= <l_out>-inst.
+      lt_result_output = CORRESPONDING #( BASE ( lt_result_output ) l_inst->get_result(  ) ) .
+    ENDLOOP.
+
+    lv_end     = lo_runtime->get_runtime( ).
+    lv_diff    = ceil( ( ( lv_end - lv_start ) / 1000000 ) / 60 ).
+
+
+    WRITE: / 'Performance Analysis Summary', AT 40 ''.
+    ULINE.
+    WRITE: / 'Total Execution Time:', lv_diff, 'seconds'.
+    WRITE: / 'Total Processed Rows:', lines( lt_excel ), 'rows'.
+    WRITE: / 'Total Result:', lines(  lt_result_output ), 'rows'.
+
+  ENDIF.
+*
